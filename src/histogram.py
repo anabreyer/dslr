@@ -3,16 +3,19 @@
 Histogram — Which Hogwarts course has a homogeneous score distribution between all four houses?
 
 Usage:
+  # Save PNGs (no GUI)
   python src/histogram.py data/dataset_train.csv
-  # This will save one PNG per course under outputs/figures/
-  # and print a ranked list of courses by a simple "homogeneity score"
-  # (lower is more homogeneous).
+
+  # Single interactive window (←/h prev, →/l next, s save, a save all, q/Esc quit)
+  python src/histogram.py data/dataset_train.csv --show
+
+  # Legacy behavior: one window per course (requires closing each)
+  python src/histogram.py data/dataset_train.csv --show --multi-windows
 
 Notes:
-- We overlay 4 house histograms (same bin edges) for each course.
-- We also compute a simple homogeneity metric: the average variance across houses
-  of per-bin normalized frequencies. Lower means more similar distributions.
-- We avoid "describe" heavy-lifting; but for plotting we rely on matplotlib.
+- Overlays 4 house histograms (same bin edges) for each course.
+- Computes a simple homogeneity metric: average per-bin variance across houses of normalized frequencies.
+- Cross-platform backend handling: GUI on macOS/desktop Linux, save-only on headless servers.
 """
 
 import argparse
@@ -20,7 +23,8 @@ import csv
 import math
 import os
 import sys
-from collections import defaultdict
+
+# ---------------- Backend configuration ----------------
 
 def configure_matplotlib_backend(wants_show: bool) -> bool:
     """
@@ -29,18 +33,15 @@ def configure_matplotlib_backend(wants_show: bool) -> bool:
     Returns:
         bool: True if interactive showing is enabled (plt.show() will be attempted),
               False if we fell back to a non-interactive backend (Agg).
-    Notes:
-        - On headless Linux (no DISPLAY), we force 'Agg' and disable interactive show.
-        - When --show is not requested, we force 'Agg' to avoid any GUI requirements.
     """
     try:
         import matplotlib
         try:
-            import matplotlib.backends
+            import matplotlib.backends  # noqa: F401
         except Exception:
             pass
     except Exception:
-        # If matplotlib is not installed, the caller will hit the import error later.
+        # If matplotlib isn't installed, import will fail later in plotting.
         return False
 
     if not wants_show:
@@ -50,34 +51,31 @@ def configure_matplotlib_backend(wants_show: bool) -> bool:
             pass
         return False
 
-    # wants_show == True
     try:
-        import sys as _sys
-        # On macOS, prefer the native Cocoa backend and do NOT require DISPLAY.
-        if _sys.platform == "darwin":
+        # On macOS, prefer native Cocoa and do NOT require DISPLAY.
+        if sys.platform == "darwin":
             try:
                 matplotlib.use("MacOSX", force=True)
             except Exception:
-                # If MacOSX backend isn't available, keep default and try to show anyway.
                 pass
             return True
 
-        # On Linux servers without X (no DISPLAY), interactive backends won't work.
+        # On Linux servers without X, interactive backends won't work.
         if os.name != "nt" and not os.environ.get("DISPLAY"):
             matplotlib.use("Agg", force=True)
             return False
 
-        # Otherwise (Windows or desktop Linux with DISPLAY), allow interactive showing.
-        return True
+        return True  # desktop Linux/Windows with GUI
     except Exception:
-        # Any issue configuring -> fall back to non-interactive
         try:
+            import matplotlib
             matplotlib.use("Agg", force=True)
         except Exception:
             pass
         return False
 
-# --- Constants ---
+# ---------------- Constants ----------------
+
 EXCLUDE_COLUMNS = {"Hogwarts House", "Index"}
 HOUSES = ["Gryffindor", "Hufflepuff", "Ravenclaw", "Slytherin"]
 MISSING_TOKENS = {"", "na", "nan", "null", "none", "NaN", "NA", "NULL", "None"}
@@ -90,17 +88,21 @@ HOUSE_COLORS = {
     "Slytherin":  "#2A623D",   # Green
 }
 
-# --- CLI parsing ---
+# ---------------- CLI ----------------
 
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv_path", help="Path to dataset_train.csv")
     ap.add_argument("--bins", type=int, default=20, help="Number of bins per histogram (default: 20)")
     ap.add_argument("--outdir", default="outputs/figures", help="Directory to save figures")
-    ap.add_argument("--show", action="store_true", help="Also show plots interactively")
+    ap.add_argument("--show", action="store_true", help="Show a single interactive window (use arrows to change course)")
+    ap.add_argument("--multi-windows", action="store_true", help="Legacy mode: open one window per course")
     return ap.parse_args()
 
-# --- CSV / parsing helpers ---
+# ---------------- CSV helpers ----------------
+
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
 
 def is_missing(s: str) -> bool:
     return s.strip() in MISSING_TOKENS
@@ -123,15 +125,15 @@ def detect_numeric_features(headers, rows):
     for h in headers:
         if h in EXCLUDE_COLUMNS:
             continue
-        all_numeric_or_missing = True
+        ok = True
         for r in rows:
             v = r.get(h, "")
             if is_missing(v):
                 continue
             if try_float(v) is None:
-                all_numeric_or_missing = False
+                ok = False
                 break
-        if all_numeric_or_missing:
+        if ok:
             numeric.append(h)
     return numeric
 
@@ -145,15 +147,15 @@ def group_values_by_house(rows, feature):
         house = r.get("Hogwarts House", "")
         if house not in by_house:
             continue
-        val_raw = r.get(feature, "")
-        if is_missing(val_raw):
+        v = r.get(feature, "")
+        if is_missing(v):
             continue
-        val = try_float(val_raw)
-        if val is not None:
-            by_house[house].append(val)
+        f = try_float(v)
+        if f is not None:
+            by_house[house].append(f)
     return by_house
 
-# --- Simple numeric utilities (manual-ish) ---
+# ---------------- Numeric helpers ----------------
 
 def safe_min(values):
     m = values[0]
@@ -171,22 +173,19 @@ def safe_max(values):
 
 def make_linspace(start, stop, num):
     """
-    Manual-ish linspace: inclusive of start and stop, returns 'num+1' edges when used for bins.
-    We’ll use it so bins = make_linspace(min, max, bins) produces len = bins+1 edges.
+    Inclusive start/stop; returns num+1 edges for num bins.
     """
     if num <= 0:
         return [start, stop]
     step = (stop - start) / float(num)
     out = [start + i * step for i in range(num + 1)]
-    # ensure last is exactly stop to avoid FP drift
     out[-1] = stop
     return out
 
 def histogram_counts(values, bin_edges):
     """
-    Manual histogram counts per bin given bin_edges.
-    - bin_edges length = B+1 for B bins.
-    - We count value x into bin i if edges[i] <= x < edges[i+1], except the last bin is inclusive.
+    Manual histogram counts per bin given bin_edges (B+1 edges -> B bins).
+    Bin rule: [edge_i, edge_{i+1}) except the last bin is inclusive.
     """
     B = len(bin_edges) - 1
     counts = [0] * B
@@ -198,10 +197,8 @@ def histogram_counts(values, bin_edges):
         if x < lo:
             continue
         if x > hi:
-            # If numerically slightly above hi, put it in the last bin.
             counts[-1] += 1
             continue
-        # find bin by linear search (B is small so it’s ok)
         placed = False
         for i in range(B - 1):
             if bin_edges[i] <= x < bin_edges[i + 1]:
@@ -209,20 +206,17 @@ def histogram_counts(values, bin_edges):
                 placed = True
                 break
         if not placed:
-            # Either x is exactly hi or at last edge due to FP -> last bin
             counts[-1] += 1
     return counts
 
 def normalize_counts(counts):
-    total = 0
-    for c in counts:
-        total += c
-    if total == 0:
-        return [0.0 for _ in counts]
-    return [c / float(total) for c in counts]
+    tot = sum(counts)
+    if tot == 0:
+        return [0.0] * len(counts)
+    return [c / float(tot) for c in counts]
 
 def variance(values):
-    # simple population variance here for our homogeneity metric (no need for ddof=1)
+    # population variance (sufficient for our homogeneity metric)
     n = len(values)
     if n == 0:
         return 0.0
@@ -233,13 +227,13 @@ def variance(values):
         acc += d * d
     return acc / n
 
-# --- Homogeneity metric ---
+# ---------------- Homogeneity metric ----------------
 
 def homogeneity_score(house_density_by_bin):
     """
-    Input: list of lists with shape (H, B) -> H houses, B bins, each row sums to 1 (or 0 if empty).
-    We compute, for each bin b, the variance across houses of the densities at that bin.
-    Then average across bins. Lower = more similar distributions.
+    Input: list of lists with shape (H, B).
+    For each bin b, compute variance across houses of densities; average across bins.
+    Lower = more similar distributions.
     """
     if not house_density_by_bin:
         return math.inf
@@ -250,7 +244,6 @@ def homogeneity_score(house_density_by_bin):
     if B == 0:
         return math.inf
 
-    # transpose: per-bin arrays across houses
     avg_var = 0.0
     for b in range(B):
         col = [house_density_by_bin[h][b] for h in range(H)]
@@ -258,10 +251,122 @@ def homogeneity_score(house_density_by_bin):
     avg_var /= B
     return avg_var
 
-# --- Plotting ---
+# ---------------- Precompute & drawing ----------------
 
-def ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
+def precompute_course_data(rows, features, bins):
+    """
+    Returns a list of dicts, one per course:
+      { 'course': str, 'by_house': dict[house -> list[float]], 'edges': list[float], 'centers': list[float] }
+    """
+    data = []
+    for course in features:
+        by_house = group_values_by_house(rows, course)
+        all_vals = []
+        for vals in by_house.values():
+            all_vals.extend(vals)
+        if len(all_vals) == 0:
+            continue
+        mn = safe_min(all_vals)
+        mx = safe_max(all_vals)
+        if mx == mn:
+            eps = 1e-9
+            mn -= eps
+            mx += eps
+        edges = make_linspace(mn, mx, bins)
+        centers = [(edges[i] + edges[i+1]) * 0.5 for i in range(len(edges) - 1)]
+        data.append({"course": course, "by_house": by_house, "edges": edges, "centers": centers})
+    return data
+
+def draw_course_on_axes(ax, item):
+    """
+    Draws one course histogram (density lines by house) onto the given axes.
+    """
+    import matplotlib.pyplot as plt  # local import for safety
+    ax.clear()
+    course = item["course"]
+    by_house = item["by_house"]
+    edges = item["edges"]
+    centers = item["centers"]
+
+    for house in HOUSES:
+        vals = by_house.get(house, [])
+        counts = histogram_counts(vals, edges)
+        dens = normalize_counts(counts)
+        ax.plot(
+            centers, dens,
+            marker="o",
+            linewidth=1.5,
+            label=house,
+            alpha=0.9,
+            color=HOUSE_COLORS.get(house)
+        )
+    ax.set_title(f"Histogram (density) per house — {course}")
+    ax.set_xlabel(course)
+    ax.set_ylabel("Density per bin")
+    ax.legend(loc="best")
+    # Tight layout per-plot (safer after plot draw)
+    ax.figure.tight_layout()
+
+def save_current_course_png(fig, ax, item, outdir):
+    ensure_dir(outdir)
+    safe_name = item["course"].replace("/", "_").replace(" ", "_")
+    out_path = os.path.join(outdir, f"hist_{safe_name}.png")
+    fig.savefig(out_path, dpi=160)
+    print(f"Saved: {out_path}")
+
+# ---------------- Interactive navigator (single window) ----------------
+
+def interactive_hist_navigator(courses_data, outdir):
+    """
+    Launch one interactive window that lets you flip through courses with keyboard:
+      - Left/Right arrows (or h/l): previous/next course
+      - s: save current course PNG
+      - a: save all courses' PNGs
+      - q or Esc: quit
+    """
+    import matplotlib.pyplot as plt
+
+    if not courses_data:
+        print("No courses to display.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    idx = 0
+
+    # initial draw
+    draw_course_on_axes(ax, courses_data[idx])
+
+    # instructions overlay
+    help_txt = ("←/h prev | →/l next | s save | a save all | q/Esc quit")
+    fig.text(0.01, 0.01, help_txt, fontsize=8, ha="left", va="bottom", alpha=0.7)
+
+    def on_key(event):
+        nonlocal idx
+        if event.key in ("right", "l"):
+            idx = (idx + 1) % len(courses_data)
+            draw_course_on_axes(ax, courses_data[idx])
+            fig.canvas.draw_idle()
+        elif event.key in ("left", "h"):
+            idx = (idx - 1) % len(courses_data)
+            draw_course_on_axes(ax, courses_data[idx])
+            fig.canvas.draw_idle()
+        elif event.key == "s":
+            save_current_course_png(fig, ax, courses_data[idx], outdir)
+        elif event.key == "a":
+            # save all; redraw current after
+            for item in courses_data:
+                draw_course_on_axes(ax, item)
+                fig.canvas.draw_idle()
+                save_current_course_png(fig, ax, item, outdir)
+            draw_course_on_axes(ax, courses_data[idx])
+            fig.canvas.draw_idle()
+        elif event.key in ("q", "escape"):
+            plt.close(fig)
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    plt.show()
+
+# ---------------- Legacy per-course plotting (kept for --multi-windows) ----------------
 
 def plot_hist_per_course(course, by_house, bin_edges, outdir, show=False):
     """
@@ -270,30 +375,14 @@ def plot_hist_per_course(course, by_house, bin_edges, outdir, show=False):
     """
     import matplotlib.pyplot as plt
 
-    plt.figure(figsize=(8, 5))
-    # Build densities for each house
-    densities = {}
-    for house, vals in by_house.items():
-        counts = histogram_counts(vals, bin_edges)
-        dens = normalize_counts(counts)
-        densities[house] = dens
-        # For visualization: plot as stepped histogram (approximate) by repeating edges and values
-        # We'll multiply density by total count just for visual scale with 'step' style,
-        # but to keep it intuitive we can plot the density itself as a bar-like step using width.
-        # Simpler: use plt.hist for visibility only, but we compute binning ourselves already.
-        # Here, we’ll just plot as a line over bin centers.
+    fig, ax = plt.subplots(figsize=(8, 5))
 
-    # Compute bin centers for plotting lines
-    centers = []
-    for i in range(len(bin_edges) - 1):
-        centers.append(0.5 * (bin_edges[i] + bin_edges[i + 1]))
-
-    # Plot one line per house
+    centers = [(bin_edges[i] + bin_edges[i + 1]) * 0.5 for i in range(len(bin_edges) - 1)]
     for house in HOUSES:
         vals = by_house.get(house, [])
         counts = histogram_counts(vals, bin_edges)
         dens = normalize_counts(counts)
-        plt.plot(
+        ax.plot(
             centers,
             dens,
             marker="o",
@@ -303,28 +392,30 @@ def plot_hist_per_course(course, by_house, bin_edges, outdir, show=False):
             color=HOUSE_COLORS.get(house)
         )
 
-    plt.title(f"Histogram (density) per house — {course}")
-    plt.xlabel(course)
-    plt.ylabel("Density per bin")
-    plt.legend()
-    plt.tight_layout()
+    ax.set_title(f"Histogram (density) per house — {course}")
+    ax.set_xlabel(course)
+    ax.set_ylabel("Density per bin")
+    ax.legend()
+    fig.tight_layout()
 
     ensure_dir(outdir)
     safe_name = course.replace("/", "_").replace(" ", "_")
     out_path = os.path.join(outdir, f"hist_{safe_name}.png")
-    plt.savefig(out_path, dpi=160)
+    fig.savefig(out_path, dpi=160)
     if show:
         try:
             plt.show()
         except Exception:
-            # Fall back silently: image already saved to disk
             pass
-    plt.close()
+    plt.close(fig)
+
+# ---------------- Main ----------------
 
 def main():
     args = parse_args()
     ensure_dir(args.outdir)
     show_enabled = configure_matplotlib_backend(args.show)
+
     headers, rows = read_csv_rows(args.csv_path)
     if not headers or not rows:
         print("Empty CSV or missing headers.")
@@ -335,53 +426,44 @@ def main():
         print("No numeric features found.")
         return
 
-    # For each course/feature, group by house and build shared bin edges
-    results = []  # (course, score)
-    for course in numeric_features:
-        by_house = group_values_by_house(rows, course)
+    # Precompute once for speed / interactivity
+    courses_data = precompute_course_data(rows, numeric_features, args.bins)
 
-        # Gather all values to define a shared min/max for bins
-        all_vals = []
-        for vals in by_house.values():
-            all_vals.extend(vals)
-        if len(all_vals) == 0:
-            continue
-
-        # min/max per course
-        mn = safe_min(all_vals)
-        mx = safe_max(all_vals)
-        if mx == mn:
-            # constant column, bins would degenerate; make a small padding
-            eps = 1e-9
-            mn -= eps
-            mx += eps
-
-        bin_edges = make_linspace(mn, mx, args.bins)
-
-        # Compute per-house densities (for homogeneity score)
+    # Compute homogeneity ranking (independent of UI choice)
+    results = []
+    for item in courses_data:
+        edges = item["edges"]
+        by_house = item["by_house"]
         house_density_by_bin = []
         for house in HOUSES:
             vals = by_house.get(house, [])
-            counts = histogram_counts(vals, bin_edges)
+            counts = histogram_counts(vals, edges)
             dens = normalize_counts(counts)
             house_density_by_bin.append(dens)
-
         score = homogeneity_score(house_density_by_bin)
-        results.append((course, score))
+        results.append((item["course"], score))
 
-        # Plot per course
-        plot_hist_per_course(course, by_house, bin_edges, args.outdir, show=show_enabled)
-
-    # Rank courses by homogeneity (lower is better)
     results.sort(key=lambda x: x[1])
     print("\n=== Homogeneity ranking (lower is more homogeneous) ===")
     for rank, (course, score) in enumerate(results, 1):
         print(f"{rank:2d}. {course}: {score:.6f}")
-
     if results:
         best_course, best_score = results[0]
         print(f"\n👉 Most homogeneous (by this metric): {best_course} (score={best_score:.6f})")
-        print(f"See per-course histograms in: {args.outdir}")
+        print(f"Figures save to: {args.outdir}")
+
+    # UI behavior
+    if args.show and show_enabled and not args.multi_windows:
+        # One interactive window (keyboard navigation)
+        interactive_hist_navigator(courses_data, args.outdir)
+    else:
+        # Legacy behavior: save + show each (if requested)
+        for item in courses_data:
+            # Save + optional show
+            plot_hist_per_course(
+                item["course"], item["by_house"], item["edges"], args.outdir,
+                show=(args.show and show_enabled)
+            )
 
 if __name__ == "__main__":
     main()

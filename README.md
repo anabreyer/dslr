@@ -74,14 +74,18 @@ Also computes a simple **homogeneity score** — lower values mean more similar 
 
 **Usage:**
 ```bash
-# Generate one histogram per course (20 bins by default)
+# Save one PNG per course (20 bins by default)
 python3 src/histogram.py data/dataset_train.csv
 
-# Show interactively (macOS/Linux-safe)
+# Open a single interactive window (use keyboard navigation)
 python3 src/histogram.py data/dataset_train.csv --show
 
-# Change bin count
+# Change number of bins
 python3 src/histogram.py data/dataset_train.csv --bins 30
+
+# Legacy mode: open one window per course (must close each)
+python3 src/histogram.py data/dataset_train.csv --show --multi-windows
+
 ```
 
 **Homogeneity metric logic:**
