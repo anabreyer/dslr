@@ -71,33 +71,86 @@ def add_bias_row(z: List[float]) -> List[float]:
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv_path", help="Path to dataset_test.csv")
-    ap.add_argument("--model", default="models/logreg_model.json", help="Path to trained JSON model")
-    ap.add_argument("--out", default="outputs/houses.csv", help="Output CSV with predictions (Index,Hogwarts House)")
-    ap.add_argument("--proba-out", default=None, help="Optional: write per-class probabilities CSV")
+    ap.add_argument(
+        "--model",
+        default=None,
+        help="Path to trained model (default: auto-detect models/weights.json or models/logreg_model.json)"
+    )
+    ap.add_argument(
+        "--out",
+        default="outputs/houses.csv",
+        help="Output CSV with predictions (Index,Hogwarts House)"
+    )
+    ap.add_argument(
+        "--proba-out",
+        default=None,
+        help="Optional: write per-class probabilities CSV"
+    )
     ap.add_argument("--verbose", action="store_true", default=False, help="Print a few sanity checks")
     return ap.parse_args()
 
+
 def load_model(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
-        model = json.load(f)
-    # sanity checks
-    required = ["houses", "feature_names", "standardize", "means", "stds", "thetas"]
-    for k in required:
-        if k not in model:
-            raise ValueError(f"Model file missing '{k}'")
-    houses = model["houses"]
-    feats = model["feature_names"]
-    means = model["means"]
-    stds = model["stds"]
-    if len(means) != len(feats) or len(stds) != len(feats):
-        raise ValueError("Model means/stds length mismatch with feature_names")
-    for h in houses:
-        th = model["thetas"].get(h)
-        if th is None:
-            raise ValueError(f"Missing theta for class '{h}'")
-        if len(th) != len(feats) + 1:  # +1 for bias
-            raise ValueError(f"Theta length mismatch for class '{h}'")
-    return model
+        raw = json.load(f)
+
+    # If it's already in the expected schema, just validate and return
+    if all(k in raw for k in ["houses", "feature_names", "standardize", "means", "stds", "thetas"]):
+        houses = raw["houses"]
+        feats = raw["feature_names"]
+        means = raw["means"]
+        stds = raw["stds"]
+        if len(means) != len(feats) or len(stds) != len(feats):
+            raise ValueError("Model means/stds length mismatch with feature_names")
+        for h in houses:
+            th = raw["thetas"].get(h)
+            if th is None:
+                raise ValueError(f"Missing theta for class '{h}'")
+            if len(th) != len(feats) + 1:
+                raise ValueError(f"Theta length mismatch for class '{h}'")
+        return raw
+
+    # Otherwise, try to adapt from the "models/weights.json" schema
+    # Expected keys: classes, features, mu, sigma, standardize, thetas, (alpha, max_iter, tol, lambda)
+    if "classes" in raw and "features" in raw and "thetas" in raw:
+        houses = raw["classes"]
+        feats = raw["features"]
+        means = raw.get("mu", [])
+        stds  = raw.get("sigma", [])
+        stdize = bool(raw.get("standardize", True))
+        thetas = raw["thetas"]
+
+        # basic validations/adaptations
+        if len(means) != len(feats) or len(stds) != len(feats):
+            raise ValueError("models/weights.json: mu/sigma length must match features length")
+        for h in houses:
+            th = thetas.get(h)
+            if th is None:
+                raise ValueError(f"models/weights.json: missing theta for class '{h}'")
+            if len(th) != len(feats) + 1:
+                raise ValueError(f"models/weights.json: theta length mismatch for class '{h}'")
+
+        # convert to the predictor's internal schema
+        model = {
+            "houses": houses,
+            "feature_names": feats,
+            "standardize": stdize,
+            "means": means,
+            "stds": stds,
+            "thetas": thetas,
+            # copy over hyperparams if present
+            "alpha": raw.get("alpha", None),
+            "max_iter": raw.get("max_iter", None),
+            "tol": raw.get("tol", None),
+            "lambda": raw.get("lambda", raw.get("l2", None)),
+            # optional: keep original blob for debugging
+            "_source": "models/weights.json",
+        }
+        return model
+
+    raise ValueError("Unrecognized model schema: expected keys like "
+                     "['houses', 'feature_names', ...] or ['classes', 'features', ...].")
+
 
 def read_test_rows(path: str) -> Tuple[List[str], List[dict]]:
     with open(path, newline="", encoding="utf-8") as f:
@@ -191,6 +244,17 @@ def write_probabilities(out_path: str, rows: List[dict], houses: List[str], all_
 
 def main():
     args = parse_args()
+
+    # --- Auto-detect model path ---
+    if args.model is None:
+        if os.path.exists("models/weights.json"):
+            args.model = "models/weights.json"
+        elif os.path.exists("models/logreg_model.json"):
+            args.model = "models/logreg_model.json"
+        else:
+            print("❌ No model file found (expected models/weights.json or models/logreg_model.json)")
+            sys.exit(1)
+
 
     # Load model
     model = load_model(args.model)
