@@ -211,6 +211,7 @@ def pair_plot(features, rows, outdir, outfile=None, show=False, bins=20):
     Draw a scatter-matrix:
       - diagonal: per-house histograms (densities)
       - off-diagonal: per-house scatter plots
+      - optimized for compact layout (small markers, tight grid)
     """
     import matplotlib.pyplot as plt
 
@@ -219,18 +220,18 @@ def pair_plot(features, rows, outdir, outfile=None, show=False, bins=20):
         print("No features to plot.")
         return None
 
-    fig_w = max(6.0, 2.2 * n)
-    fig_h = max(6.0, 2.2 * n)
+    # ↓↓↓ Compact figure scaling ↓↓↓
+    fig_w = max(6.0, 1.2 * n)   # was 2.2 * n
+    fig_h = max(6.0, 1.2 * n)
     fig, axes = plt.subplots(nrows=n, ncols=n, figsize=(fig_w, fig_h))
 
-    # Make sure axes is 2D array even if n=1
+    # Ensure 2D array even for n=1
     if n == 1:
         axes = [[axes]]
 
-    # For consistent colors across houses
     house_labels = HOUSES
 
-    # Pre-compute global min/max per feature for diagonal bins
+    # Precompute global min/max per feature
     feature_minmax = {}
     for f in features:
         values = collect_feature_values(rows, f)
@@ -245,7 +246,6 @@ def pair_plot(features, rows, outdir, outfile=None, show=False, bins=20):
                 mx += eps
         feature_minmax[f] = (mn, mx)
 
-    # Helper for normalized histogram counts (like in histogram.py)
     def make_edges(mn, mx, b):
         step = (mx - mn) / float(b)
         edges = [mn + i * step for i in range(b + 1)]
@@ -264,13 +264,11 @@ def pair_plot(features, rows, outdir, outfile=None, show=False, bins=20):
             if x > hi:
                 counts[-1] += 1
                 continue
-            placed = False
             for i in range(B - 1):
                 if edges[i] <= x < edges[i + 1]:
                     counts[i] += 1
-                    placed = True
                     break
-            if not placed:
+            else:
                 counts[-1] += 1
         return counts
 
@@ -294,33 +292,40 @@ def pair_plot(features, rows, outdir, outfile=None, show=False, bins=20):
                     vals = by_house[house]
                     counts = hist_counts(vals, edges)
                     dens = to_density(counts)
-                    ax.plot(centers, dens, marker="o", linewidth=1.2, alpha=0.9, label=house, color=HOUSE_COLORS.get(house))
-                ax.set_ylabel("Density")
-                ax.set_xlabel(yi)
+                    ax.plot(
+                        centers, dens,
+                        marker="",
+                        linewidth=0.9,
+                        alpha=0.8,
+                        color=HOUSE_COLORS.get(house),
+                    )
                 if j == n - 1:
-                    # Only put legend on the last diagonal cell to avoid clutter
-                    ax.legend(fontsize=8, loc="upper right")
+                    ax.legend(fontsize=6, loc="upper right", frameon=False)
             else:
-                # Off-diagonal: per-house scatter
+                # Off-diagonal: scatter with smaller points & low alpha
                 by_house_x, by_house_y = collect_xy_by_house(rows, xj, yi)
                 for house in house_labels:
                     ax.scatter(
                         by_house_x[house],
                         by_house_y[house],
-                        s=8,
-                        alpha=0.7,
-                        label=house if (i == j == 0) else None,
+                        s=4,           # smaller point size
+                        alpha=0.5,     # more transparency
+                        linewidths=0,
                         color=HOUSE_COLORS.get(house)
                     )
-                if i == n - 1:
-                    ax.set_xlabel(xj)
-                if j == 0:
-                    ax.set_ylabel(yi)
+            # Axis labeling every edge only
+            if i == n - 1:
+                ax.set_xlabel(xj, fontsize=7)
+            else:
+                ax.set_xticklabels([])
+            if j == 0:
+                ax.set_ylabel(yi, fontsize=7)
+            else:
+                ax.set_yticklabels([])
 
-            # Improve spacing
-            ax.tick_params(axis='both', which='both', labelsize=7)
+            ax.tick_params(axis="both", which="both", labelsize=6, length=1.5)
 
-    plt.tight_layout(pad=1.2)
+    plt.tight_layout(pad=0.5, w_pad=0.2, h_pad=0.2)
 
     ensure_dir(outdir)
     if outfile is None:
@@ -385,11 +390,17 @@ def main():
     if args.features:
         explicit_list = [s for s in args.features.split(",") if s.strip()]
 
-    try:
-        features = pick_features(headers, rows, numeric_features, explicit_list, args.max_features)
-    except ValueError as e:
-        print(f"Error: {e}")
-        return
+    # >>> ADD THIS BLOCK <<<
+    # If user asked to show and didn't specify features, plot ALL numeric features
+    if show_enabled and not explicit_list:
+        features = numeric_features  # all of them
+    else:
+        try:
+            features = pick_features(headers, rows, numeric_features, explicit_list, args.max_features)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
+    # <<< END ADD >>>
 
     if len(features) == 0:
         print("No features selected.")
@@ -399,6 +410,7 @@ def main():
     out_path = pair_plot(features, rows, args.outdir, outfile=args.outfile, show=show_enabled)
     if out_path:
         print(f"Saved pair plot to: {out_path}")
+
 
 if __name__ == "__main__":
     main()

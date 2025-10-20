@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Histogram — Which Hogwarts course has a homogeneous score distribution between all four houses?
 
@@ -279,32 +278,35 @@ def precompute_course_data(rows, features, bins):
 
 def draw_course_on_axes(ax, item):
     """
-    Draws one course histogram (density lines by house) onto the given axes.
+    Draw one course as overlaid bar histograms (same bin edges for all houses),
+    with transparent fills and colored outlines — like the screenshot.
     """
     import matplotlib.pyplot as plt  # local import for safety
     ax.clear()
     course = item["course"]
     by_house = item["by_house"]
     edges = item["edges"]
-    centers = item["centers"]
 
+    # Draw bars per house
     for house in HOUSES:
         vals = by_house.get(house, [])
-        counts = histogram_counts(vals, edges)
-        dens = normalize_counts(counts)
-        ax.plot(
-            centers, dens,
-            marker="o",
-            linewidth=1.5,
-            label=house,
-            alpha=0.9,
-            color=HOUSE_COLORS.get(house)
+        if not vals:
+            continue
+        ax.hist(
+            vals,
+            bins=edges,            # use precomputed common edges
+            density=True,          # density to compare shapes
+            alpha=0.35,            # transparent fill
+            color=HOUSE_COLORS.get(house),
+            edgecolor=HOUSE_COLORS.get(house),
+            linewidth=1.4,
+            label=house
         )
-    ax.set_title(f"Histogram (density) per house — {course}")
+
+    ax.set_title(f"Score Distribution for {course}")
     ax.set_xlabel(course)
-    ax.set_ylabel("Density per bin")
-    ax.legend(loc="best")
-    # Tight layout per-plot (safer after plot draw)
+    ax.set_ylabel("Density")
+    ax.legend(title="Hogwarts House", loc="best")
     ax.figure.tight_layout()
 
 def save_current_course_png(fig, ax, item, outdir):
@@ -370,38 +372,40 @@ def interactive_hist_navigator(courses_data, outdir):
 
 def plot_hist_per_course(course, by_house, bin_edges, outdir, show=False):
     """
-    Overlay 4 house histograms for a single course using the same bin edges.
+    Overlay 4 house histograms for a single course (bar/column style),
+    using identical bin edges for fair comparison.
     Saves as outputs/figures/hist_<course>.png
     """
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(10, 6))
 
-    centers = [(bin_edges[i] + bin_edges[i + 1]) * 0.5 for i in range(len(bin_edges) - 1)]
     for house in HOUSES:
         vals = by_house.get(house, [])
-        counts = histogram_counts(vals, bin_edges)
-        dens = normalize_counts(counts)
-        ax.plot(
-            centers,
-            dens,
-            marker="o",
-            linewidth=1.5,
-            label=house,
-            alpha=0.9,
-            color=HOUSE_COLORS.get(house)
+        if not vals:
+            continue
+        ax.hist(
+            vals,
+            bins=bin_edges,
+            density=True,
+            alpha=0.35,
+            color=HOUSE_COLORS.get(house),
+            edgecolor=HOUSE_COLORS.get(house),
+            linewidth=1.4,
+            label=house
         )
 
-    ax.set_title(f"Histogram (density) per house — {course}")
+    ax.set_title(f"Score Distribution for {course}")
     ax.set_xlabel(course)
-    ax.set_ylabel("Density per bin")
-    ax.legend()
+    ax.set_ylabel("Density")
+    ax.legend(title="Hogwarts House", loc="best")
     fig.tight_layout()
 
     ensure_dir(outdir)
     safe_name = course.replace("/", "_").replace(" ", "_")
     out_path = os.path.join(outdir, f"hist_{safe_name}.png")
     fig.savefig(out_path, dpi=160)
+
     if show:
         try:
             plt.show()
@@ -467,3 +471,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+coisas para mudar: mudar para formato pilar (talvez fazer formato ponto e pilar ao mesmo tempo como o da jisu)
+
+"""

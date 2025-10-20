@@ -1,28 +1,21 @@
 #!/usr/bin/env python3
 """
-Predict Hogwarts House using a one-vs-all Logistic Regression model
-trained by src/logreg_train.py.
+Predict Hogwarts House using a one-vs-all Logistic Regression model trained by src/logreg_train.py.
 
-- Loads the JSON model (weights, feature order, means/stds, etc.)
+This version STRICTLY uses models/weights.json (no alternate schemas or paths).
+
+- Loads models/weights.json (keys: classes, features, mu, sigma, thetas, optional standardize)
 - Reads dataset_test.csv
-- Imputes any missing/non-numeric feature with the training mean
-- Applies the same standardization (if enabled in the model)
-- Computes probabilities for each class and picks argmax
+- Imputes any missing/non-numeric feature with the training mean (mu)
+- Applies the same standardization (if enabled)
+- Computes OVA probabilities and picks argmax
 - Writes outputs/houses.csv with headers: Index,Hogwarts House
 - (Optional) Also writes per-class probabilities to a CSV
 
 Usage:
-  # Default paths
-  python src/logreg_predict.py data/dataset_test.csv --model models/logreg_model.json
-
-  # Custom output path
-  python src/logreg_predict.py data/dataset_test.csv --out outputs/houses.csv
-
-  # Also save class probabilities
-  python src/logreg_predict.py data/dataset_test.csv --proba-out outputs/probas.csv
-
-Notes:
-- No sklearn; all math is manual and consistent with training.
+  python3 src/logreg_predict.py data/dataset_test.csv
+  python3 src/logreg_predict.py data/dataset_test.csv --out outputs/houses.csv
+  python3 src/logreg_predict.py data/dataset_test.csv --proba-out outputs/probas.csv
 """
 
 import argparse
@@ -72,11 +65,6 @@ def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv_path", help="Path to dataset_test.csv")
     ap.add_argument(
-        "--model",
-        default=None,
-        help="Path to trained model (default: auto-detect models/weights.json or models/logreg_model.json)"
-    )
-    ap.add_argument(
         "--out",
         default="outputs/houses.csv",
         help="Output CSV with predictions (Index,Hogwarts House)"
@@ -89,68 +77,52 @@ def parse_args():
     ap.add_argument("--verbose", action="store_true", default=False, help="Print a few sanity checks")
     return ap.parse_args()
 
+def load_weights_json() -> dict:
+    model_path = "models/weights.json"
+    if not os.path.exists(model_path):
+        print("❌ Expected model at models/weights.json (not found).")
+        sys.exit(1)
 
-def load_model(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(model_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
-    # If it's already in the expected schema, just validate and return
-    if all(k in raw for k in ["houses", "feature_names", "standardize", "means", "stds", "thetas"]):
-        houses = raw["houses"]
-        feats = raw["feature_names"]
-        means = raw["means"]
-        stds = raw["stds"]
-        if len(means) != len(feats) or len(stds) != len(feats):
-            raise ValueError("Model means/stds length mismatch with feature_names")
-        for h in houses:
-            th = raw["thetas"].get(h)
-            if th is None:
-                raise ValueError(f"Missing theta for class '{h}'")
-            if len(th) != len(feats) + 1:
-                raise ValueError(f"Theta length mismatch for class '{h}'")
-        return raw
+    # Strict schema: classes, features, mu, sigma, thetas
+    required = ["classes", "features", "mu", "sigma", "thetas"]
+    for k in required:
+        if k not in raw:
+            raise ValueError(f"models/weights.json is missing required key '{k}'")
 
-    # Otherwise, try to adapt from the "models/weights.json" schema
-    # Expected keys: classes, features, mu, sigma, standardize, thetas, (alpha, max_iter, tol, lambda)
-    if "classes" in raw and "features" in raw and "thetas" in raw:
-        houses = raw["classes"]
-        feats = raw["features"]
-        means = raw.get("mu", [])
-        stds  = raw.get("sigma", [])
-        stdize = bool(raw.get("standardize", True))
-        thetas = raw["thetas"]
+    houses = raw["classes"]
+    feats = raw["features"]
+    means = raw["mu"]
+    stds  = raw["sigma"]
+    thetas = raw["thetas"]
+    standardize = bool(raw.get("standardize", True))
 
-        # basic validations/adaptations
-        if len(means) != len(feats) or len(stds) != len(feats):
-            raise ValueError("models/weights.json: mu/sigma length must match features length")
-        for h in houses:
-            th = thetas.get(h)
-            if th is None:
-                raise ValueError(f"models/weights.json: missing theta for class '{h}'")
-            if len(th) != len(feats) + 1:
-                raise ValueError(f"models/weights.json: theta length mismatch for class '{h}'")
+    if not isinstance(houses, list) or not isinstance(feats, list):
+        raise ValueError("classes and features must be lists in models/weights.json")
+    if len(means) != len(feats) or len(stds) != len(feats):
+        raise ValueError("mu/sigma length must match features length in models/weights.json")
 
-        # convert to the predictor's internal schema
-        model = {
-            "houses": houses,
-            "feature_names": feats,
-            "standardize": stdize,
-            "means": means,
-            "stds": stds,
-            "thetas": thetas,
-            # copy over hyperparams if present
-            "alpha": raw.get("alpha", None),
-            "max_iter": raw.get("max_iter", None),
-            "tol": raw.get("tol", None),
-            "lambda": raw.get("lambda", raw.get("l2", None)),
-            # optional: keep original blob for debugging
-            "_source": "models/weights.json",
-        }
-        return model
+    for h in houses:
+        th = thetas.get(h)
+        if th is None:
+            raise ValueError(f"models/weights.json: missing theta for class '{h}'")
+        if len(th) != len(feats) + 1:
+            raise ValueError(f"models/weights.json: theta length mismatch for class '{h}' "
+                             f"(expected {len(feats)+1}, got {len(th)})")
 
-    raise ValueError("Unrecognized model schema: expected keys like "
-                     "['houses', 'feature_names', ...] or ['classes', 'features', ...].")
-
+    # Normalize to predictor's internal keys
+    model = {
+        "houses": houses,
+        "feature_names": feats,
+        "standardize": standardize,
+        "means": means,
+        "stds": stds,
+        "thetas": thetas,
+        "_source": "models/weights.json",
+    }
+    return model
 
 def read_test_rows(path: str) -> Tuple[List[str], List[dict]]:
     with open(path, newline="", encoding="utf-8") as f:
@@ -220,22 +192,23 @@ def argmax_label(probas: Dict[str, float]) -> str:
 def write_predictions(out_path: str, rows: List[dict], preds: List[str]):
     ensure_dir(os.path.dirname(out_path))
     # Try to preserve 'Index' if present, else use row order
-    has_index = "Index" in (rows[0].keys() if rows else {})
+    has_index = bool(rows) and "Index" in rows[0]
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Index", "Hogwarts House"])
         for i, r in enumerate(rows):
-            idx = r.get("Index", i)
+            idx = r.get("Index", i) if has_index else i
             writer.writerow([idx, preds[i]])
     print(f"Saved predictions → {out_path}")
 
 def write_probabilities(out_path: str, rows: List[dict], houses: List[str], all_probas: List[Dict[str, float]]):
     ensure_dir(os.path.dirname(out_path))
+    has_index = bool(rows) and "Index" in rows[0]
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Index"] + houses)
         for i, r in enumerate(rows):
-            idx = r.get("Index", i)
+            idx = r.get("Index", i) if has_index else i
             row_out = [idx] + [f"{all_probas[i].get(h, 0.0):.6f}" for h in houses]
             writer.writerow(row_out)
     print(f"Saved per-class probabilities → {out_path}")
@@ -245,19 +218,8 @@ def write_probabilities(out_path: str, rows: List[dict], houses: List[str], all_
 def main():
     args = parse_args()
 
-    # --- Auto-detect model path ---
-    if args.model is None:
-        if os.path.exists("models/weights.json"):
-            args.model = "models/weights.json"
-        elif os.path.exists("models/logreg_model.json"):
-            args.model = "models/logreg_model.json"
-        else:
-            print("❌ No model file found (expected models/weights.json or models/logreg_model.json)")
-            sys.exit(1)
-
-
-    # Load model
-    model = load_model(args.model)
+    # Load STRICT weights.json
+    model = load_weights_json()
     houses: List[str] = model["houses"]
     features: List[str] = model["feature_names"]
     standardize: bool = bool(model.get("standardize", True))
