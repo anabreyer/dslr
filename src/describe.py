@@ -57,7 +57,7 @@ def safe_max(values):
     #manual max
     m = values[0]
     for x in values[1:]:
-        if x < m:
+        if x > m:
             m = x
     return m
 
@@ -68,7 +68,7 @@ def safe_sum(values):
         y = x - c
         t = total + y
         c = (t - total) - y
-        total = y
+        total = t
     return total
 
 def mean(values):
